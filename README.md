@@ -48,9 +48,6 @@ $ cd <go-workspace>/src/github.com/mesos/mesos-go/examples
 
 # build example-scheduler
 $ go build -tags=example-sched -o example-scheduler example_scheduler.go
-
-# build example-executor
-$ go build -tags=example-exec -o example-executor example_executor.go
 ```
 
 Or by using the top level Makefile:
@@ -59,12 +56,6 @@ $ cd <go-workspace>/src/github.com/mesos/mesos-go
 
 # build example-scheduler
 $ make example-scheduler
-
-# build example-executor
-$ make example-executor
-
-# build example-scheduler and example-executor at the same time
-$ make examples
 ```
 
 ## Running the Example
@@ -75,20 +66,11 @@ $ <mesos-build-install>/bin/mesos-local --ip=127.0.0.1 --port=5050
 ```
 See http://mesos.apache.org/gettingstarted/ for getting started with Apache Mesos.
 
-### Running the Go Scheduler/Executor Examples
+### Running the Go Scheduler Examples
+This scheduler example will schedule Docker containers, and the image name and count (default 5) need be passed.
 ```
 $ cd <go-workspace>/src/github.com/mesos/mesos-go
 $ cd examples
-$ ./example-scheduler --master=127.0.0.1:5050 --executor="<go-workspace>/src/github.com/mesos/mesos-go/examples/example-executor" --logtostderr=true
+$ ./example-scheduler —-master=127.0.0.1:5050 —-image=centos6:latest --task-count=3 --logtostderr=true
 ```
-Note: you must provide the fully-qualified path to the `example-executor` binary.  If all goes well, you should see output about task completion.  You can also point your browser to the Mesos GUI http://127.0.0.1:5050/ to validate the framework activities.
-
-### Running the Go Scheduler with Other Executors
-You can also use the Go `example-scheduler` with executors written in other languages such as  `Python` or `Java`  for further validation (note: to use these executors requires a build of the mesos source code with `make check`):
-```
-$ ./example-scheduler --master=127.0.0.1:5050 --executor="<mesos-build>/src/examples/python/test-executor" --logtostderr=true
-```
-Similarly for the Java version:
-```
-$ ./example-scheduler --master=127.0.0.1:5050 --executor="<mesos-build>/src/examples/java/test-executor" --logtostderr=true
-```
+Note: If all goes well, you should see output about task completion.  You can also point your browser to the Mesos GUI http://127.0.0.1:5050/ to validate the framework activities.

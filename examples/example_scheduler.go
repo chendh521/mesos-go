@@ -1,34 +1,12 @@
-// +build example-sched
-
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package main
 
 import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"net"
-	"net/http"
 	"strconv"
-	"strings"
 
+	"code.google.com/p/go-uuid/uuid"
 	"github.com/gogo/protobuf/proto"
 	log "github.com/golang/glog"
 	"github.com/mesos/mesos-go/auth"
@@ -41,37 +19,34 @@ import (
 )
 
 const (
-	CPUS_PER_TASK       = 1
-	MEM_PER_TASK        = 128
-	defaultArtifactPort = 12345
+	CPUS_PER_TASK = 1
+	MEM_PER_TASK  = 128
 )
 
 var (
-	address      = flag.String("address", "127.0.0.1", "Binding address for artifact server")
-	artifactPort = flag.Int("artifactPort", defaultArtifactPort, "Binding port for artifact server")
 	authProvider = flag.String("mesos_authentication_provider", sasl.ProviderName,
 		fmt.Sprintf("Authentication provider to use, default is SASL that supports mechanisms: %+v", mech.ListSupported()))
 	master              = flag.String("master", "127.0.0.1:5050", "Master address <ip:port>")
-	executorPath        = flag.String("executor", "./example_executor", "Path to test executor")
+	image               = flag.String("image", "", "Docker image name.")
 	taskCount           = flag.String("task-count", "5", "Total task count to run.")
 	mesosAuthPrincipal  = flag.String("mesos_authentication_principal", "", "Mesos authentication principal.")
 	mesosAuthSecretFile = flag.String("mesos_authentication_secret_file", "", "Mesos authentication secret file.")
 )
 
 type ExampleScheduler struct {
-	executor      *mesos.ExecutorInfo
+	imageName     string
 	tasksLaunched int
 	tasksFinished int
 	totalTasks    int
 }
 
-func newExampleScheduler(exec *mesos.ExecutorInfo) *ExampleScheduler {
+func newExampleScheduler() *ExampleScheduler {
 	total, err := strconv.Atoi(*taskCount)
 	if err != nil {
 		total = 5
 	}
 	return &ExampleScheduler{
-		executor:      exec,
+		imageName:     *image,
 		tasksLaunched: 0,
 		tasksFinished: 0,
 		totalTasks:    total,
@@ -113,6 +88,7 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 		remainingMems := mems
 
 		var tasks []*mesos.TaskInfo
+
 		for sched.tasksLaunched < sched.totalTasks &&
 			CPUS_PER_TASK <= remainingCpus &&
 			MEM_PER_TASK <= remainingMems {
@@ -120,18 +96,38 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 			sched.tasksLaunched++
 
 			taskId := &mesos.TaskID{
-				Value: proto.String(strconv.Itoa(sched.tasksLaunched)),
+				Value: proto.String(uuid.New()),
 			}
 
+			// container info
+			networkInfo := mesos.ContainerInfo_DockerInfo_BRIDGE
+			dockerInfo := &mesos.ContainerInfo_DockerInfo{
+				Image:   &sched.imageName,
+				Network: &networkInfo,
+			}
+
+			typeInfo := mesos.ContainerInfo_DOCKER
+			container := &mesos.ContainerInfo{
+				Type:   &typeInfo,
+				Docker: dockerInfo,
+			}
+
+			shellBool := false
+			command := &mesos.CommandInfo{
+				Shell: &shellBool,
+			}
+
+			// create task to run
 			task := &mesos.TaskInfo{
-				Name:     proto.String("go-task-" + taskId.GetValue()),
-				TaskId:   taskId,
-				SlaveId:  offer.SlaveId,
-				Executor: sched.executor,
+				Name:    proto.String("go-task-" + taskId.GetValue()),
+				TaskId:  taskId,
+				SlaveId: offer.SlaveId,
 				Resources: []*mesos.Resource{
 					util.NewScalarResource("cpus", CPUS_PER_TASK),
 					util.NewScalarResource("mem", MEM_PER_TASK),
 				},
+				Container: container,
+				Command:   command,
 			}
 			log.Infof("Prepared task: %s with offer %s for launch\n", task.GetName(), offer.Id.GetValue())
 
@@ -155,24 +151,32 @@ func (sched *ExampleScheduler) StatusUpdate(driver sched.SchedulerDriver, status
 		driver.Stop(false)
 	}
 
+	// re-schedule task to run when task lost, killed or failed
 	if status.GetState() == mesos.TaskState_TASK_LOST ||
 		status.GetState() == mesos.TaskState_TASK_KILLED ||
 		status.GetState() == mesos.TaskState_TASK_FAILED {
-		log.Infoln(
-			"Aborting because task", status.TaskId.GetValue(),
+		log.Errorln(
+			"Task", status.TaskId.GetValue(),
 			"is in unexpected state", status.State.String(),
 			"with message", status.GetMessage(),
 		)
-		driver.Abort()
+		sched.tasksLaunched--
 	}
 }
 
-func (sched *ExampleScheduler) OfferRescinded(sched.SchedulerDriver, *mesos.OfferID) {}
+func (sched *ExampleScheduler) OfferRescinded(sched.SchedulerDriver, *mesos.OfferID) {
+	log.Infoln("OfferRescinded")
+
+}
 
 func (sched *ExampleScheduler) FrameworkMessage(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, string) {
+	log.Infoln("FrameworkMessage")
 }
-func (sched *ExampleScheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {}
+func (sched *ExampleScheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {
+	log.Infoln("SlaveLost")
+}
 func (sched *ExampleScheduler) ExecutorLost(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, int) {
+	log.Infoln("ExecutorLost")
 }
 
 func (sched *ExampleScheduler) Error(driver sched.SchedulerDriver, err string) {
@@ -186,70 +190,9 @@ func init() {
 	log.Infoln("Initializing the Example Scheduler...")
 }
 
-// returns (downloadURI, basename(path))
-func serveExecutorArtifact(path string) (*string, string) {
-	serveFile := func(pattern string, filename string) {
-		http.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, filename)
-		})
-	}
-
-	// Create base path (http://foobar:5000/<base>)
-	pathSplit := strings.Split(path, "/")
-	var base string
-	if len(pathSplit) > 0 {
-		base = pathSplit[len(pathSplit)-1]
-	} else {
-		base = path
-	}
-	serveFile("/"+base, path)
-
-	hostURI := fmt.Sprintf("http://%s:%d/%s", *address, *artifactPort, base)
-	log.V(2).Infof("Hosting artifact '%s' at '%s'", path, hostURI)
-
-	return &hostURI, base
-}
-
-func prepareExecutorInfo() *mesos.ExecutorInfo {
-	executorUris := []*mesos.CommandInfo_URI{}
-	uri, executorCmd := serveExecutorArtifact(*executorPath)
-	executorUris = append(executorUris, &mesos.CommandInfo_URI{Value: uri, Executable: proto.Bool(true)})
-
-	executorCommand := fmt.Sprintf("./%s", executorCmd)
-
-	go http.ListenAndServe(fmt.Sprintf("%s:%d", *address, *artifactPort), nil)
-	log.V(2).Info("Serving executor artifacts...")
-
-	// Create mesos scheduler driver.
-	return &mesos.ExecutorInfo{
-		ExecutorId: util.NewExecutorID("default"),
-		Name:       proto.String("Test Executor (Go)"),
-		Source:     proto.String("go_test"),
-		Command: &mesos.CommandInfo{
-			Value: proto.String(executorCommand),
-			Uris:  executorUris,
-		},
-	}
-}
-
-func parseIP(address string) net.IP {
-	addr, err := net.LookupIP(address)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if len(addr) < 1 {
-		log.Fatalf("failed to parse IP from address '%v'", address)
-	}
-	return addr[0]
-}
-
 // ----------------------- func main() ------------------------- //
 
 func main() {
-
-	// build command executor
-	exec := prepareExecutorInfo()
-
 	// the framework
 	fwinfo := &mesos.FrameworkInfo{
 		User: proto.String(""), // Mesos-go will fill in user.
@@ -268,16 +211,13 @@ func main() {
 			Secret:    secret,
 		}
 	}
-	bindingAddress := parseIP(*address)
 	config := sched.DriverConfig{
-		Scheduler:      newExampleScheduler(exec),
-		Framework:      fwinfo,
-		Master:         *master,
-		Credential:     cred,
-		BindingAddress: bindingAddress,
+		Scheduler:  newExampleScheduler(),
+		Framework:  fwinfo,
+		Master:     *master,
+		Credential: cred,
 		WithAuthContext: func(ctx context.Context) context.Context {
 			ctx = auth.WithLoginProvider(ctx, *authProvider)
-			ctx = sasl.WithBindingAddress(ctx, bindingAddress)
 			return ctx
 		},
 	}
